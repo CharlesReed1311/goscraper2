@@ -3,16 +3,17 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-	"os"
 	"strings"
-	"time"
 
 	"goscraper/src/globals"
 	"goscraper/src/handlers"
 	"goscraper/src/helpers/databases"
 	"goscraper/src/types"
 	"goscraper/src/utils"
+	"log"
+	"os"
+
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cache"
@@ -42,22 +43,6 @@ func main() {
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			return utils.HandleError(c, err)
 		},
-	})
-
-	// ✅ CSRF bypass middleware — very top
-	app.Use(func(c *fiber.Ctx) error {
-		log.Printf("Checking CSRF bypass for path: %s", c.Path())
-		switch c.Path() {
-		case "/login", "/hello", "/health", "/ping":
-			return c.Next()
-		}
-		token := c.Get("X-CSRF-Token")
-		if token == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "Missing X-CSRF-Token header",
-			})
-		}
-		return c.Next()
 	})
 
 	app.Use(recover.New())
@@ -99,10 +84,24 @@ func main() {
 		LimiterMiddleware:  limiter.SlidingWindow{},
 	}))
 
-	// Authorization middleware
 	app.Use(func(c *fiber.Ctx) error {
 		switch c.Path() {
-		case "/hello", "/health", "/ping":
+		case "/login", "/hello":
+			return c.Next()
+		}
+
+		token := c.Get("X-CSRF-Token")
+		if token == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Missing X-CSRF-Token header",
+			})
+		}
+		return c.Next()
+	})
+
+	app.Use(func(c *fiber.Ctx) error {
+		switch c.Path() {
+		case "/hello":
 			return c.Next()
 		}
 
@@ -133,7 +132,8 @@ func main() {
 				})
 			}
 
-			key := parts[0]
+			key, _, _, _ := parts[0], parts[1], parts[2], parts[3]
+
 			valid, err := utils.ValidateAuth(fmt.Sprint(time.Now().UnixNano()/int64(time.Millisecond)), key)
 			if err != nil || !*valid {
 				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
@@ -153,6 +153,17 @@ func main() {
 		return c.Next()
 	})
 
+	// Universal error handling middleware
+	app.Use(func(c *fiber.Ctx) error {
+		err := c.Next()
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+		return nil
+	})
+
 	cacheConfig := cache.Config{
 		Next: func(c *fiber.Ctx) bool {
 			return c.Method() != "GET"
@@ -165,7 +176,7 @@ func main() {
 
 	api := app.Group("/", func(c *fiber.Ctx) error {
 		switch c.Path() {
-		case "/login", "/hello", "/health", "/ping":
+		case "/login", "/hello":
 			return c.Next()
 		}
 		token := c.Get("X-CSRF-Token")
@@ -177,20 +188,10 @@ func main() {
 		return c.Next()
 	})
 
-	// Routes
+	// Routes -----------------------------------------
+
 	app.Get("/hello", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"message": "Hello, World!"})
-	})
-
-	app.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"status": "alive",
-			"time":   time.Now().Format(time.RFC3339),
-		})
-	})
-
-	app.Get("/ping", func(c *fiber.Ctx) error {
-		return c.SendString("pong")
 	})
 
 	app.Post("/login", func(c *fiber.Ctx) error {
@@ -302,6 +303,7 @@ func main() {
 		}
 
 		return c.JSON(dbcal)
+
 	})
 
 	api.Get("/timetable", cache.New(cacheConfig), func(c *fiber.Ctx) error {
@@ -361,6 +363,8 @@ func main() {
 		}
 		return c.JSON(responseData)
 	})
+
+	// ----------------------------------------------------
 
 	port := os.Getenv("PORT")
 	if port == "" {
